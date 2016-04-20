@@ -17,6 +17,8 @@ const msgpackRPCReq = 0
 const msgpackRPCRsp = 1
 const msgpackRPCNotify = 2
 
+var ErrMethodNotFound = errors.New("Method Not Found")
+
 // Precompute the reflect type for error.  Can't use error directly
 // because Typeof takes an empty interface value.  This is annoying.
 var typeOfError = reflect.TypeOf((*error)(nil)).Elem()
@@ -168,7 +170,7 @@ func suitableMethods(typ reflect.Type, reportErr bool) map[string]*methodType {
 	return methods
 }
 
-func (ep *endpoint) send(reqobj []interface{}) (err error) {
+func (ep *endpoint) send(obj []interface{}) (err error) {
 	enc := codec.NewEncoder(ep.conn, ep.mpk)
 	ep.mu.Lock()
 	defer ep.mu.Unlock()
@@ -176,7 +178,7 @@ func (ep *endpoint) send(reqobj []interface{}) (err error) {
 		err = ep.err
 		return
 	}
-	err = enc.Encode(reqobj)
+	err = enc.Encode(obj)
 	return
 }
 
@@ -232,24 +234,65 @@ func (ep *endpoint) RegisterMethodName(method interface{}, name string) (err err
 	return
 }
 
+func (ep *endpoint) parseRequest(dec *codec.Decoder, reqType *int, reqArgs []interface{}) (err error) {
+	err = dec.Decode(&reqArgs)
+	if err != nil {
+		return
+	}
+	if len(reqArgs) < 3 {
+		err = errors.New("invalid request")
+		return
+	}
+	var ok bool
+	if *reqType, ok = reqArgs[0].(int); !ok || !(*reqType >= msgpackRPCReq && *reqType <= msgpackRPCNotify) {
+		err = errors.New("invalid request")
+		return
+	}
+	if (*reqType == msgpackRPCReq || *reqType == msgpackRPCRsp) && len(reqArgs) != 4 {
+		err = errors.New("invalid request")
+		return
+	}
+	if *reqType == msgpackRPCNotify && len(reqArgs) != 3 {
+		err = errors.New("invalid request")
+		return
+	}
+	return
+}
+
+func (ep *endpoint) processRequest(reqArgs []interface{}) (err error) {
+	return
+}
+
+func (ep *endpoint) processResponse(reqArgs []interface{}) (err error) {
+	return
+}
+
+func (ep *endpoint) processNotify(reqArgs []interface{}) (err error) {
+	return
+}
+
 func (ep *endpoint) Reading(closed chan int) (err error) {
 	dec := codec.NewDecoder(ep.conn, ep.mpk)
-	//	var msgtype int
-	//	var msgid uint32
-	//	var ok bool
+	var msgtype int
+	defer func() {
+		ep.err = err
+		ep.closed = true
+	}()
 	for !ep.closed {
-		var msg []interface{}
-		err = dec.Decode(&msg)
+		var reqArgs []interface{}
+		err = ep.parseRequest(dec, &msgtype, reqArgs)
 		//TODO handle timeout
 		if err != nil {
-			ep.closed = true
-			ep.err = err
 			return
 		}
-		if len(msg) != 3 || len(msg) != 4 {
-			ep.closed = true
-			ep.err = errors.New("invalid request")
-			err = ep.err
+		if msgtype == msgpackRPCReq {
+			err = ep.processRequest(reqArgs)
+		} else if msgtype == msgpackRPCRsp {
+			err = ep.processResponse(reqArgs)
+		} else if msgtype == msgpackRPCNotify {
+			err = ep.processNotify(reqArgs)
+		}
+		if err != nil {
 			return
 		}
 		//TODO
